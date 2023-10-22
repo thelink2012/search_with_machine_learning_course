@@ -53,7 +53,9 @@ def create_feature_log_query(query, doc_ids, click_prior_query, featureset_name,
                             "featureset": featureset_name,
                             "store": ltr_store_name,
                             "params": {
-                                "keywords": query
+                                "keywords": query,
+                                #"skus": query.split(),
+                                #"click_prior_query": click_prior_query
                             }
                         }
                     }
@@ -96,13 +98,15 @@ def create_rescore_ltr_query(user_query: str, query_obj, click_prior_query: str,
             "rescore_query": {
                 "sltr": {
                     "params": {
-                        "keywords": user_query
+                        "keywords": user_query,
+                        #"skus": user_query.split(),
+                        #"click_prior_query": click_prior_query
                     },
                     "model": ltr_model_name,
-                    "store": ltr_store_name,
-                    "active_features": ["name_match"]
+                    "store": ltr_store_name
                 }
             },
+            "score_mode": "total",
             "query_weight": main_query_weight,
             "rescore_query_weight": rescore_query_weight
         }
@@ -124,7 +128,6 @@ def extract_logged_features(hits, query_id):
     feature_results["doc_id"] = []  # capture the doc id so we can join later
     feature_results["query_id"] = []  # ^^^
     feature_results["sku"] = []
-    rng = np.random.default_rng(12345)
     log_entry_names = set()
     for hit in hits:
         assert len(hit['fields']['_ltrlog']) == 1
