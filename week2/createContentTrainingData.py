@@ -5,10 +5,19 @@ from tqdm import tqdm
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import nltk
+from nltk.stem import PorterStemmer
+from nltk.tokenize import word_tokenize
+
+nltk.download('punkt')
+
+ps = PorterStemmer()
 
 def transform_name(product_name):
-    # IMPLEMENT
-    return product_name
+    product_name = product_name.lower()
+    tokens = word_tokenize(product_name)
+    #tokens = [ps.stem(t) for t in tokens]
+    return " ".join(tokens)
 
 # Directory for product data
 directory = r'/workspace/datasets/product_data/products/'
@@ -19,7 +28,6 @@ general.add_argument("--input", default=directory,  help="The directory containi
 general.add_argument("--output", default="/workspace/datasets/fasttext/output.fasttext", help="the file to output to")
 general.add_argument("--label", default="id", help="id is default and needed for downsteam use, but name is helpful for debugging")
 
-# IMPLEMENT: Setting min_products removes infrequent categories and makes the classifier's task easier.
 general.add_argument("--min_products", default=0, type=int, help="The minimum number of products per category (default is 0).")
 
 args = parser.parse_args()
@@ -31,11 +39,19 @@ if os.path.isdir(output_dir) == False:
 
 if args.input:
     directory = args.input
-# IMPLEMENT: Track the number of items in each category and only output if above the min
 min_products = args.min_products
 names_as_labels = False
 if args.label == 'name':
     names_as_labels = True
+
+def filter_min_products(all_labels):
+    counter = dict()
+    for cat, name in all_labels:
+        counter[cat] = 0. # init cat key
+    for cat, name in all_labels:
+        counter[cat] += 1
+    return [(cat, name) for cat, name in all_labels if counter[cat] >= min_products]
+
 
 def _label_filename(filename):
     tree = ET.parse(filename)
@@ -62,8 +78,13 @@ if __name__ == '__main__':
     files = glob.glob(f'{directory}/*.xml')
     print("Writing results to %s" % output_file)
     with multiprocessing.Pool() as p:
-        all_labels = tqdm(p.imap(_label_filename, files), total=len(files))
+        all_labels_partitioned = tqdm(p.imap(_label_filename, files), total=len(files))
+        all_labels = []
+        for label_list in all_labels_partitioned:
+            all_labels.extend(label_list)
+        del all_labels_partitioned
+        if min_products > 0:
+            all_labels = filter_min_products(all_labels)
         with open(output_file, 'w') as output:
-            for label_list in all_labels:
-                for (cat, name) in label_list:
-                    output.write(f'__label__{cat} {name}\n')
+            for (cat, name) in all_labels:
+                output.write(f'__label__{cat} {name}\n')
