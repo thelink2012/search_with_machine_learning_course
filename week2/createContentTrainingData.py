@@ -29,6 +29,7 @@ general.add_argument("--output", default="/workspace/datasets/fasttext/output.fa
 general.add_argument("--label", default="id", help="id is default and needed for downsteam use, but name is helpful for debugging")
 
 general.add_argument("--min_products", default=0, type=int, help="The minimum number of products per category (default is 0).")
+general.add_argument("--promote", action=argparse.BooleanOptionalAction, default=False, help="Promote categories to its parent instead of discarding (needs --min_products set).")
 
 args = parser.parse_args()
 output_file = args.output
@@ -51,6 +52,76 @@ def filter_min_products(all_labels):
     for cat, name in all_labels:
         counter[cat] += 1
     return [(cat, name) for cat, name in all_labels if counter[cat] >= min_products]
+
+
+def _exists_and_needs_promotion(cat, counter):
+    c = counter.get(cat, 0)
+    return _exists_and_needs_promotion_v(c)
+
+def _exists_and_needs_promotion_v(count):
+    return count > 0 and count < min_products
+
+def _read_category_info():
+    tree = ET.parse('/workspace/datasets/product_data/categories/categories_0001_abcat0010000_to_pcmcat99300050000.xml')
+    root = tree.getroot()
+    parent_of_cat = dict()
+    indepth_children_of_cat = dict()
+    for child in root:
+        cat_id = child.find('id').text
+
+        cat_path = [cpath.find('id').text for cpath in child.find('path')]
+        cat_path = [c for c in cat_path if c != cat_id]
+        cat_parent = cat_path[-1] if len(cat_path) > 0 else None
+        parent_of_cat[cat_id] = cat_parent
+
+        cat_subs = set(subcat.find('id').text for subcat in child.find('subCategories'))
+        indepth_children_of_cat[cat_id] = cat_subs
+    return parent_of_cat, indepth_children_of_cat
+
+
+def promote_categories(all_labels):
+    print("promoting categories")
+
+    counter = dict()
+    for cat, name in all_labels:
+        counter[cat] = 0. # init cat key
+    for cat, name in all_labels:
+        counter[cat] += 1
+
+    parent_of_cat, indepth_children_of_cat =_read_category_info()
+
+    while any(_exists_and_needs_promotion_v(v) for v in counter.values()):
+        print(f"still exists {sum(v < min_products for v in counter.values())} categories that need promotion")
+        for i in range(len(all_labels)):
+            if all_labels[i] is None:  # excluded
+                continue
+            cat, name = all_labels[i]
+            if counter[cat] >= min_products:
+                continue  # do not promote if does not need promotion
+            if cat not in indepth_children_of_cat:
+                 # missing data in categories XML, cannot do much about it
+                assert cat not in parent_of_cat
+                counter[cat] -= 1
+                all_labels[i] = None
+                continue
+            if any(_exists_and_needs_promotion(ichild, counter) for ichild in indepth_children_of_cat[cat]):
+                continue  # do not promote if there exists children categories that still need promotion
+            new_cat = parent_of_cat[cat]
+            if new_cat is None:  # no parent
+                counter[cat] -= 1
+                all_labels[i] = None # cannot promote anymore, exclude
+            else:
+                counter[cat] -= 1
+                if new_cat not in counter:
+                    counter[new_cat] = 0
+                counter[new_cat] += 1
+                all_labels[i] = (new_cat, name)
+    
+    all_labels = [x for x in all_labels if x is not None]
+    all_labels = [(cat, name) for cat, name in all_labels if cat != 'cat00000']
+    return all_labels
+
+
 
 
 def _label_filename(filename):
@@ -83,8 +154,11 @@ if __name__ == '__main__':
         for label_list in all_labels_partitioned:
             all_labels.extend(label_list)
         del all_labels_partitioned
-        if min_products > 0:
+    if min_products > 0:
+        if args.promote:
+            all_labels = promote_categories(all_labels)
+        else:
             all_labels = filter_min_products(all_labels)
-        with open(output_file, 'w') as output:
-            for (cat, name) in all_labels:
-                output.write(f'__label__{cat} {name}\n')
+    with open(output_file, 'w') as output:
+        for (cat, name) in all_labels:
+            output.write(f'__label__{cat} {name}\n')
