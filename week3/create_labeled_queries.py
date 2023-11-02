@@ -4,6 +4,7 @@ import xml.etree.ElementTree as ET
 import pandas as pd
 import numpy as np
 import csv
+import re
 
 # Useful if you want to perform stemming.
 import nltk
@@ -48,9 +49,42 @@ parents_df = pd.DataFrame(list(zip(categories, parents)), columns =['category', 
 queries_df = pd.read_csv(queries_file_name)[['category', 'query']]
 queries_df = queries_df[queries_df['category'].isin(categories)]
 
-# IMPLEMENT ME: Convert queries to lowercase, and optionally implement other normalization, like stemming.
+# Convert queries to lowercase, and optionally implement other normalization, like stemming.
+def normalize_query(query):
+    query = query.lower()
+    query = re.sub(r'[^a-zA-Z0-9]', ' ', query)
+    query = re.sub(r'\s+', ' ', query).strip()
+    query = ' '.join([stemmer.stem(token) for token in query.split()])
+    return query
 
-# IMPLEMENT ME: Roll up categories to ancestors to satisfy the minimum number of queries per category.
+queries_df['query'] = queries_df['query'].map(normalize_query)
+
+# Roll up categories to ancestors to satisfy the minimum number of queries per category.
+def roll_up_categories(queries_df, parents_df, min_queries):
+    category_query_counts = queries_df.groupby('category')['query'].count().reset_index()
+    
+    while True:
+        categories_below_threshold = category_query_counts[category_query_counts['query'] < min_queries]
+        if categories_below_threshold.empty:
+            break
+        
+        category_to_roll_up = categories_below_threshold.loc[categories_below_threshold['query'].idxmin()]['category']
+        
+        parent = parents_df[parents_df['category'] == category_to_roll_up]['parent'].values[0]
+
+        category_query_counts.loc[category_query_counts['category'] == parent, 'query'] += category_query_counts.loc[
+            category_query_counts['category'] == category_to_roll_up, 'query'].values[0]
+        
+        queries_df.loc[queries_df['category'] == category_to_roll_up, 'category'] = parent
+        
+        queries_df = queries_df[queries_df['category'] != category_to_roll_up]
+        category_query_counts = category_query_counts[category_query_counts['category'] != category_to_roll_up]
+    
+    return queries_df
+
+queries_df = roll_up_categories(queries_df, parents_df, min_queries)
+
+print("Distinct category count: {}".format(queries_df['category'].nunique()))
 
 # Create labels in fastText format.
 queries_df['label'] = '__label__' + queries_df['category']
