@@ -6,16 +6,46 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import argparse
 import json
 import os
+import re
+import sys
 from getpass import getpass
 from urllib.parse import urljoin
 import pandas as pd
 import fileinput
 import logging
+import fasttext
+import nltk
+stemmer = nltk.stem.PorterStemmer()
 
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logging.basicConfig(format='%(levelname)s:%(message)s')
+
+CATEGORY_MODEL = fasttext.load_model("model_2.bin")
+CATEGORY_MODEL_THRESHOLD = 0.5
+
+def predict_categories(query):
+    def normalize_query(query):
+        query = query.lower()
+        query = re.sub(r'[^a-zA-Z0-9]', ' ', query)
+        query = re.sub(r'\s+', ' ', query).strip()
+        query = ' '.join([stemmer.stem(token) for token in query.split()])
+        return query
+
+    query = normalize_query(query)
+    labels, thresholds = CATEGORY_MODEL.predict(query, k=5)
+    labels = [l.replace("__label__", "") for l in labels]
+
+    total_threshold = 0.0
+    for i in range(len(labels)):
+        total_threshold += thresholds[i]
+        if total_threshold >= CATEGORY_MODEL_THRESHOLD:
+            return labels[:i+1]
+    return []
+
+
+
 
 # expects clicks and impressions to be in the row
 def create_prior_queries_from_group(
@@ -167,6 +197,7 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
             }
         }
     }
+    #print(json.dumps(query_obj))
     if click_prior_query is not None and click_prior_query != "":
         query_obj["query"]["function_score"]["query"]["bool"]["should"].append({
             "query_string": {
@@ -186,11 +217,17 @@ def create_query(user_query, click_prior_query, filters, sort="_score", sortDir=
     return query_obj
 
 
-def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc"):
-    #### W3: classify the query
-    #### W3: create filters and boosts
+def search(client, user_query, index="bbuy_products", sort="_score", sortDir="desc", classify=False):
+    filters = []
+
+    if classify:
+        predicted_cats = predict_categories(query)
+        print(f"Categoris predicted: {predicted_cats}")
+        if len(predicted_cats) > 0:
+            filters.append({"terms": {"categoryPathIds": predicted_cats}})
+
     # Note: you may also want to modify the `create_query` method above
-    query_obj = create_query(user_query, click_prior_query=None, filters=None, sort=sort, sortDir=sortDir, source=["name", "shortDescription"])
+    query_obj = create_query(user_query, click_prior_query=None, filters=filters, sort=sort, sortDir=sortDir, source=["name", "shortDescription", "categoryPathIds"])
     logging.info(query_obj)
     response = client.search(query_obj, index=index)
     if response and response['hits']['hits'] and len(response['hits']['hits']) > 0:
@@ -241,10 +278,15 @@ if __name__ == "__main__":
     index_name = args.index
     query_prompt = "\nEnter your query (type 'Exit' to exit or hit ctrl-c):"
     print(query_prompt)
-    for line in fileinput.input():
+    for line in sys.stdin:
         query = line.rstrip()
         if query == "Exit":
             break
+
+        print("==== Using prediction")
+        search(client=opensearch, user_query=query, index=index_name, classify=True)
+
+        print("\n==== Not using prediction")
         search(client=opensearch, user_query=query, index=index_name)
 
         print(query_prompt)
